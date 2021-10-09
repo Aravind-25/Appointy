@@ -1,0 +1,162 @@
+package main
+
+import (
+"context"
+"fmt"
+
+"log"
+"net/http"
+"time"
+
+"github.com/julienschmidt/httprouter"
+"go.mongodb.org/mongo-driver/bson/primitive"
+"go.mongodb.org/mongo-driver/mongo"
+"go.mongodb.org/mongo-driver/mongo/options"
+
+"encoding/json"
+)
+
+//users
+type Users struct {
+Id       primitive.ObjectID `json:"_id,omitempty" bson:"_id,omitempty"`
+Name     string             `json:"name" bson:"name"`
+Email    string             `json:"email" bson:"email"`
+Password string             `json:"password" bson:"password"`
+}
+
+type UserController struct {
+collection *mongo.Collection
+}
+
+func createUserController(userCollection *mongo.Collection) *UserController {
+return &UserController{userCollection}
+}
+
+// Add user information to the user database
+func (uc UserController) addUser(response http.ResponseWriter, request *http.Request, p httprouter.Params) {
+response.Header().Add("content-type", "application/json")
+var user Users
+json.NewDecoder(request.Body).Decode(&user)
+ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
+result, _ := uc.collection.InsertOne(ctx, user)
+json.NewEncoder(response).Encode(result)
+}
+
+// Fetch user information based on the given user-id
+func (uc UserController) getSingleUser(response http.ResponseWriter, request *http.Request, parameters httprouter.Params) {
+response.Header().Add("content-type", "application/json")
+id_string := parameters.ByName("id")
+
+id, _ := primitive.ObjectIDFromHex(id_string)
+var user Users
+ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
+err := uc.collection.FindOne(ctx, Users{Id: id}).Decode(&user)
+if err != nil {
+response.WriteHeader(http.StatusInternalServerError)
+response.Write([]byte(`{"message: "` + err.Error() + `"}"`))
+return
+}
+json.NewEncoder(response).Encode(user)
+}
+
+
+// Posts
+type Posts struct {
+Id               primitive.ObjectID `json:"_id,omitempty" bson:"_id,omitempty"`
+AccountId        primitive.ObjectID `json:"accountid" bson:"accountid"`
+Caption          string             `json:"caption" bson:"caption"`
+Image_URL        string             `json:"imageurl" bson:"imageurl"`
+Posted_Timestamp time.Time          `json:"posted_Timestamp" bson:"Posted_Timestamp"`
+}
+
+type PostsController struct {
+postscollection *mongo.Collection
+}
+
+func createPostController(collection *mongo.Collection) *PostsController {
+return &PostsController{collection}
+}
+
+// Fetch post based on the given post-id
+func (pc PostsController) getSinglePost(response http.ResponseWriter, request *http.Request, parameters httprouter.Params) {
+response.Header().Add("content-type", "application/json")
+id_string := parameters.ByName("id")
+
+id, _ := primitive.ObjectIDFromHex(id_string)
+var post Posts
+ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
+err := pc.postscollection.FindOne(ctx, Posts{Id: id}).Decode(&post)
+
+if err != nil {
+response.WriteHeader(http.StatusInternalServerError)
+response.Write([]byte(`{"message: "` + err.Error() + `"}"`))
+return
+}
+json.NewEncoder(response).Encode(post)
+}
+
+// lists all the posts posted by a particular user
+func (pc PostsController) getPostByUser(response http.ResponseWriter, request *http.Request, parameters httprouter.Params) {
+response.Header().Add("content-type", "application/json")
+id_string := parameters.ByName("id")
+
+id, _ := primitive.ObjectIDFromHex(id_string)
+var postArray []Posts
+ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
+cursor, err := pc.postscollection.Find(ctx, Posts{AccountId: id})
+
+if err != nil {
+response.WriteHeader(http.StatusInternalServerError)
+response.Write([]byte(`{"message: "` + err.Error() + `"}"`))
+return
+}
+defer cursor.Close(ctx)
+
+for cursor.Next(ctx) {
+var post Posts
+cursor.Decode(&post)
+postArray = append(postArray, post)
+}
+
+if err := cursor.Err(); err != nil {
+response.WriteHeader(http.StatusInternalServerError)
+response.Write([]byte(`{"message: "` + err.Error() + `"}"`))
+return
+}
+json.NewEncoder(response).Encode(postArray)
+}
+
+
+// main
+
+func main() {
+fmt.Println("Start.")
+
+ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
+// if err != nil {
+// log.Fatal(err)
+// }
+client, _ := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
+// if err!=nil {
+// log.Fatal(err)
+// }
+
+usercollection := client.Database("instadupe").Collection("users")
+userController := createUserController(usercollection)
+
+postcollection := client.Database("instadupe").Collection("posts")
+postController := createPostController(postcollection)
+
+r := httprouter.New()
+
+r.POST("/users", userController.addUser)
+r.GET("/users/:id", userController.getSingleUser)
+
+r.POST("/posts", postController.addPost)
+r.GET("/posts/:id", postController.getSinglePost)
+
+r.GET("/posts/:id/users", postController.getPostByUser)
+
+log.Fatal(http.ListenAndServe(":8080", r))
+
+}
